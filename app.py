@@ -1,77 +1,112 @@
 import sqlite3
+from datetime import datetime
+from enum import Enum
 
 import streamlit as st
 from pydantic import BaseModel
 import streamlit_pydantic as sp
 
-con = sqlite3.connect("shoppinglist.sqlite", isolation_level=None)
-cur = con.cursor()
+# Enum for task state and category
+class State(str, Enum):
+    PLANNED = "Planned"
+    IN_PROGRESS = "In-progress"
+    DONE = "Done"
 
-cur.execute(
-    """
-    CREATE TABLE IF NOT EXISTS tasks (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        number INTEGER,
-        description TEXT,
-        is_done BOOLEAN,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        created_by TEXT,
-    )
-    """
-)
+class Category(str, Enum):
+    SCHOOL = "School"
+    WORK = "Work"
+    PERSONAL = "Personal"
 
+# Task model
 class Task(BaseModel):
     name: str
     description: str
-    is_done: bool
+    state: State = State.PLANNED    
+    category: Category
 
-def toggle_is_done(is_done, row):
-    cur.execute(
-        """
-        UPDATE tasks SET is_done = ? WHERE id = ?
-        """,
-        (is_done, row[0]),
+# Connect to SQLite database
+con = sqlite3.connect("todoapp.sqlite", isolation_level=None, check_same_thread=False)
+cur = con.cursor()
+
+# Create the table
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        description TEXT,
+        state TEXT,
+        created_at TEXT,
+        created_by TEXT,
+        category TEXT
     )
+""")
 
+# Function to insert a new task
+def insert_task(task_data):
+    cur.execute("""
+        INSERT INTO tasks (name, description, state, created_at, created_by, category) VALUES (?, ?, ?, ?, ?, ?)
+    """, (task_data.name, task_data.description, task_data.state, datetime.now(), "default_user", task_data.category))
+
+# Function to update the state of a task
+def update_task_state(task_id, new_state):
+    cur.execute("UPDATE tasks SET state = ? WHERE id = ?", (new_state, task_id))
+
+# Function to delete a task
+def delete_task(task_id):
+    cur.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    
+# Streamlit app
 def main():
     st.title("Todo App")
-    data = sp.pydantic_form(key="task_form", model=Task)
-    if data:
-        cur.execute(
-            """
-            INSERT INTO tasks (name, description, is_done) VALUES (?, ?, ?)
-            """,
-            (data.name, data.description, data.is_done),
-        )
 
-    data = cur.execute(
-        """
-        SELECT * FROM tasks
-        """
-    ).fetchall()
+    # Task submission form
+    task_data = sp.pydantic_form(key="task_form", model=Task)
+    if task_data:
+        insert_task(task_data)
 
-    # HINT: how to implement a Edit button?
-    # if st.query_params.get('id') == "123":
-    #     st.write("Hello 123")
-    #     st.markdown(
-    #         f'<a target="_self" href="/" style="display: inline-block; padding: 6px 10px; background-color: #4CAF50; color: white; text-align: center; text-decoration: none; font-size: 12px; border-radius: 4px;">Back</a>',
-    #         unsafe_allow_html=True,
-    #     )
-    #     return
+    # Search and filter functionality
+    search_query = st.text_input("Search")
+    filter_category = st.selectbox("Filter by Category", options=["", "School", "Work", "Personal"])
 
-    cols = st.columns(3)
-    cols[0].write("Done?")
-    cols[1].write("Name")
-    cols[2].write("Description")
-    for row in data:
-        cols = st.columns(3)
-        cols[0].checkbox('is_done', row[3], label_visibility='hidden', key=row[0], on_change=toggle_is_done, args=(not row[3], row))
-        cols[1].write(row[1])
-        cols[2].write(row[2])
-        # cols[2].markdown(
-        #     f'<a target="_self" href="/?id=123" style="display: inline-block; padding: 6px 10px; background-color: #4CAF50; color: white; text-align: center; text-decoration: none; font-size: 12px; border-radius: 4px;">Action Text on Button</a>',
-        #     unsafe_allow_html=True,
-        # )
+    # Display tasks
+    query = "SELECT * FROM tasks"
+    conditions = []
+    if search_query:
+        conditions.append(f"(name LIKE '%{search_query}%' OR description LIKE '%{search_query}%')")
+    if filter_category:
+        conditions.append(f"category = '{filter_category}'")
 
-main()
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+
+    tasks = cur.execute(query).fetchall()
+    for task in tasks:
+        with st.expander(f"{task[1]} (ID: {task[0]})"):
+            st.write(f"Description: {task[2]}")
+            st.write(f"State: {task[3]}")
+            st.write(f"Created At: {task[4]}")
+            st.write(f"Created By: {task[5]}")
+            st.write(f"Category: {task[6]}")
+
+            # Update state
+            # Update state with immediate effect
+            current_state = task[3]
+            new_state = st.selectbox(
+                "Change State", 
+                options=list(State), 
+                index=list(State).index(current_state), 
+                key=f"state_{task[0]}"
+            )
+
+            # Detect state change and update database
+            if new_state != current_state:
+                update_task_state(task[0], new_state)
+                current_state = new_state  # Update current state to reflect the change
+
+            # Delete task
+            if st.button("Delete", key=f"delete_{task[0]}"):
+                delete_task(task[0])
+                st.experimental_rerun()
+
+if __name__ == "__main__":
+    main()
